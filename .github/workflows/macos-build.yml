@@ -49,6 +49,7 @@ jobs:
       EVIDENCE_REPOSITORY: grusirna/codex-assistant-source
     steps:
       - name: Validate entry
+        id: entry
         shell: bash
         run: |
           [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
@@ -64,6 +65,7 @@ jobs:
         shell: bash
         env:
           SOURCE_READ_KEY: ${{ secrets.SOURCE_READ_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           (
@@ -74,8 +76,8 @@ jobs:
             trap 'rm -f "$key_file" "$host_file"' EXIT
             printf '%s\n' "$SOURCE_READ_KEY" > "$key_file"
             unset SOURCE_READ_KEY
-            curl --fail --silent --show-error --retry 3 https://api.github.com/meta |
-              jq -er '.ssh_keys[] | "github.com " + .' > "$host_file"
+            gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$host_file"
+            unset GH_TOKEN
             export GIT_SSH_COMMAND="/usr/bin/ssh -i $key_file -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$host_file"
             git init --quiet private-source
             cd private-source
@@ -110,16 +112,21 @@ jobs:
           exit "$result"
 
       - name: Return private evidence
-        if: ${{ always() && inputs.mode != 'runner-probe' && steps.source.outcome == 'success' }}
+        if: ${{ always() && inputs.mode != 'runner-probe' && steps.entry.outcome == 'success' }}
         shell: bash
-        working-directory: private-source
         env:
           BUILD_EVIDENCE_TOKEN: ${{ secrets.BUILD_EVIDENCE_TOKEN }}
           PRIVATE_TASK_OUTCOME: ${{ steps.task.outcome }}
+          PRIVATE_SOURCE_OUTCOME: ${{ steps.source.outcome }}
         run: |
           set +e
-          node scripts/run-macos-builder.mjs preserve > "$RUNNER_TEMP/private-build/transport.log" 2>&1
-          result=$?
+          result=1
+          if [[ "$PRIVATE_SOURCE_OUTCOME" == success ]]; then
+            (cd private-source && node scripts/run-macos-builder.mjs preserve) > "$RUNNER_TEMP/private-build/transport.log" 2>&1
+            result=$?
+          else
+            printf 'Private checkout failed; only bootstrap diagnostics are available.\n' > "$RUNNER_TEMP/private-build/transport.log"
+          fi
           printf 'Private evidence transport exit status: %s.\n' "$result"
           if [[ "$result" != 0 ]]; then
             (
@@ -132,11 +139,12 @@ jobs:
                   flatten | map(select(.tag_name == $tag and .draft and .target_commitish == $source) |
                     select(try (.body | fromjson | .sourceCommit == $source and .workflowCommit == $workflow and .requestId == $request) catch false)) |
                   select(length == 1) | .[0].id')
-              for log_name in checkout runner transport; do
+              for log_name in runner transport checkout; do
                 log_file="$RUNNER_TEMP/private-build/$log_name.log"
                 if [[ -s "$log_file" ]]; then
-                  gh api "https://uploads.github.com/repos/grusirna/codex-assistant-source/releases/$draft_id/assets?name=bootstrap-$log_name-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log" \
-                    --method POST -H 'Content-Type: application/octet-stream' --input "$log_file" > /dev/null
+                  upload_file="$RUNNER_TEMP/private-build/bootstrap-$log_name-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+                  cp "$log_file" "$upload_file"
+                  gh release upload "$PRIVATE_DRAFT_TAG" --repo grusirna/codex-assistant-source "$upload_file"
                 fi
               done
             ) > "$RUNNER_TEMP/private-build/fallback.log" 2>&1
