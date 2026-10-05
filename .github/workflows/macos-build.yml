@@ -1,0 +1,105 @@
+name: macOS build
+run-name: macOS ${{ inputs.mode }} · ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Controlled product task
+        type: choice
+        options: [probe, smoke, full, revalidate, diagnostic]
+        default: probe
+        required: true
+      source_commit:
+        description: Exact private source commit
+        type: string
+        required: true
+      private_draft_tag:
+        description: Exact private evidence destination
+        type: string
+        required: true
+      request_id:
+        description: Unique dispatch request
+        type: string
+        required: true
+      options_json:
+        description: Controlled native validation options
+        type: string
+        default: '{}'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'grusirna/codex-assistant' && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      BUILD_MODE: ${{ inputs.mode }}
+      PRIVATE_DRAFT_TAG: ${{ inputs.private_draft_tag }}
+      BUILD_REQUEST_ID: ${{ inputs.request_id }}
+      BUILD_OPTIONS_JSON: ${{ inputs.options_json }}
+      SOURCE_REPOSITORY: grusirna/codex-assistant-source
+      EVIDENCE_REPOSITORY: grusirna/codex-assistant-source
+    steps:
+      - name: Validate entry
+        shell: bash
+        run: |
+          [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$PRIVATE_DRAFT_TAG" =~ ^codex-assistant-macos-build-transport-[A-Za-z0-9][A-Za-z0-9._-]{0,100}$ ]]
+          [[ "$BUILD_REQUEST_ID" =~ ^[a-f0-9-]{36}$ ]]
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          mkdir -p "$RUNNER_TEMP/private-build"
+          printf 'Apple Silicon runner started.\n'
+
+      - name: Read exact private source
+        id: source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: grusirna/codex-assistant-source
+          ref: ${{ inputs.source_commit }}
+          path: private-source
+          ssh-key: ${{ secrets.SOURCE_READ_KEY }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Install pinned JavaScript
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.19.0
+
+      - name: Execute private task
+        id: task
+        shell: bash
+        working-directory: private-source
+        env:
+          BUILD_EVIDENCE_TOKEN: ${{ secrets.BUILD_EVIDENCE_TOKEN }}
+          HISTORICAL_ARTIFACT_TOKEN: ${{ secrets.HISTORICAL_ARTIFACT_TOKEN }}
+        run: |
+          set +e
+          node scripts/run-macos-builder.mjs run > "$RUNNER_TEMP/private-build/runner.log" 2>&1
+          result=$?
+          printf 'Private task exit status: %s.\n' "$result"
+          exit "$result"
+
+      - name: Return private evidence
+        if: ${{ always() && steps.source.outcome == 'success' }}
+        shell: bash
+        working-directory: private-source
+        env:
+          BUILD_EVIDENCE_TOKEN: ${{ secrets.BUILD_EVIDENCE_TOKEN }}
+          PRIVATE_TASK_OUTCOME: ${{ steps.task.outcome }}
+        run: |
+          set +e
+          node scripts/run-macos-builder.mjs preserve > "$RUNNER_TEMP/private-build/transport.log" 2>&1
+          result=$?
+          printf 'Private evidence transport exit status: %s.\n' "$result"
+          exit "$result"
