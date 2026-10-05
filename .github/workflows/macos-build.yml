@@ -7,7 +7,7 @@ on:
       mode:
         description: Controlled product task
         type: choice
-        options: [probe, smoke, full, revalidate, diagnostic]
+        options: [runner-probe, probe, smoke, full, revalidate, diagnostic]
         default: probe
         required: true
       source_commit:
@@ -72,11 +72,13 @@ jobs:
           show-progress: false
 
       - name: Install pinned JavaScript
+        if: inputs.mode != 'runner-probe'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.19.0
 
       - name: Execute private task
+        if: inputs.mode != 'runner-probe'
         id: task
         shell: bash
         working-directory: private-source
@@ -91,7 +93,7 @@ jobs:
           exit "$result"
 
       - name: Return private evidence
-        if: ${{ always() && steps.source.outcome == 'success' }}
+        if: ${{ always() && inputs.mode != 'runner-probe' && steps.source.outcome == 'success' }}
         shell: bash
         working-directory: private-source
         env:
@@ -103,3 +105,11 @@ jobs:
           result=$?
           printf 'Private evidence transport exit status: %s.\n' "$result"
           exit "$result"
+
+      - name: Verify exact private checkout
+        if: inputs.mode == 'runner-probe'
+        shell: bash
+        working-directory: private-source
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          printf 'Exact private checkout verified; private write transport needs a separate probe.\n'
