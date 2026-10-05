@@ -134,7 +134,7 @@ jobs:
                   select(length == 1) | .[0].id')
               for log_name in checkout runner transport; do
                 log_file="$RUNNER_TEMP/private-build/$log_name.log"
-                if [[ -f "$log_file" ]]; then
+                if [[ -s "$log_file" ]]; then
                   gh api "https://uploads.github.com/repos/grusirna/codex-assistant-source/releases/$draft_id/assets?name=bootstrap-$log_name-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log" \
                     --method POST -H 'Content-Type: application/octet-stream' --input "$log_file" > /dev/null
                 fi
